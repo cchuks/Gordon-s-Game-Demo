@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Catch the Gordon’s</title>
+  <style>
+    :root {
+      --bg1: #ffe6eb;
+      --bg2: #f7bfd3;
+      --panel: #b30059;
+      --accent: #ff66b3;
+      --good: #ff66b3;
+      --bad: #555;
+      --text: #fff;
+      --soft: #ffe6eb;
+    }
+    body {
+      margin: 0;
+      font-family: 'Poppins', sans-serif;
+      background: linear-gradient(180deg, var(--bg1), var(--bg2));
+      overflow: hidden;
+      color: var(--text);
+    }
+    .hud {
+      position: fixed; top: 0; width: 100%; height: 64px;
+      background: rgba(179, 0, 89, 0.85);
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 0 16px;
+      font-weight: 600;
+    }
+    .chip { background: rgba(255,255,255,0.1); border-radius: 12px; padding: 8px 12px; }
+    #game { position: fixed; inset: 0; touch-action: none; }
+    .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.4); }
+    .card { background: #b30059; border-radius: 24px; padding: 24px; text-align: center; color: var(--text); }
+    button { background: var(--accent); border: none; padding: 12px 20px; border-radius: 12px; font-weight: 700; color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div class="hud">
+    <div class="chip" id="score">Serves: 0</div>
+    <div class="chip" id="level">Round: 1</div>
+    <div class="chip" id="lives">Chills: ❄❄❄</div>
+    <div class="chip" id="best">Best Serve: 0</div>
+  </div>
+
+  <div class="overlay" id="startOverlay">
+    <div class="card">
+      <h2>Catch the Gordon’s</h2>
+      <p>Slide the ice bucket and catch only Gordon’s Pink Berry bottles.<br>Leave the rest — we only do pink here 🍓🍸</p>
+      <button id="playBtn">Start Serving</button>
+    </div>
+  </div>
+
+  <div class="overlay" id="gameOverOverlay" style="display:none;">
+    <div class="card">
+      <h2>Party’s Over!</h2>
+      <p id="finalStats"></p>
+      <button id="retryBtn">Another Round 🍸</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    let W = innerWidth, H = innerHeight;
+    canvas.width = W; canvas.height = H;
+    addEventListener('resize', ()=>{W=innerWidth;H=innerHeight;canvas.width=W;canvas.height=H;});
+
+    const player = {x: W/2, y: H-70, w: 120, h: 40, speed: 480};
+    let targetX = player.x; // for smooth gliding
+    let score=0, level=1, lives=3, best=+localStorage.getItem('gordon_best')||0;
+    let running=false, drops=[], last=performance.now(), spawnTimer=0;
+
+    const ui={score:document.getElementById('score'), level:document.getElementById('level'), lives:document.getElementById('lives'), best:document.getElementById('best')};
+
+    function reset(){
+      score=0;level=1;lives=3;drops=[];
+      running=true;
+      document.getElementById('startOverlay').style.display='none';
+      document.getElementById('gameOverOverlay').style.display='none';
+      updateHUD();
+    }
+
+    function updateHUD(){
+      ui.score.textContent='Serves: '+score;
+      ui.level.textContent='Round: '+level;
+      ui.lives.textContent='Chills: '+('❄'.repeat(lives));
+      ui.best.textContent='Best Serve: '+best;
+    }
+
+    function rand(a,b){return Math.random()*(b-a)+a;}
+    function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+
+    function drawBucket(p){
+      const {x,y,w,h}=p;
+      ctx.save();
+      ctx.translate(x,y);
+      ctx.fillStyle='rgba(200,230,255,0.7)';
+      ctx.beginPath();
+      ctx.moveTo(-w/2,h/2); ctx.lineTo(w/2,h/2);
+      ctx.lineTo(w*0.45,-h/2); ctx.lineTo(-w*0.45,-h/2);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.3)';
+      for(let i=0;i<5;i++){ctx.fillRect(rand(-w/4,w/4),rand(-h/2,0),10,10);}
+      ctx.restore();
+    }
+
+    function drawBottle(x,y,r,type){
+      ctx.save(); ctx.translate(x,y);
+      if(type==='good'){
+        const g=ctx.createLinearGradient(0,-r,0,r);
+        g.addColorStop(0,'#ff99cc'); g.addColorStop(1,'#ff66b3');
+        ctx.fillStyle=g;
+        ctx.beginPath(); ctx.roundRect(-r/2,-r,r,2*r,r/5); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font='bold 12px Poppins'; ctx.textAlign='center';
+        ctx.fillText('Gordon\'s',0,4);
+      } else {
+        ctx.fillStyle='#ccc';
+        ctx.beginPath(); ctx.roundRect(-r/2,-r,r,2*r,r/5); ctx.fill();
+        ctx.fillStyle='#b30059'; ctx.font='bold 11px Poppins'; ctx.textAlign='center';
+        ctx.fillText('Other Gin ❌',0,4);
+      }
+      ctx.restore();
+    }
+
+    function intersects(d,p){
+      const cx = clamp(d.x, p.x - p.w/2, p.x + p.w/2);
+      const cy = clamp(d.y, p.y - p.h/2, p.y + p.h/2);
+      const dx = d.x - cx, dy = d.y - cy;
+      return (dx*dx + dy*dy) < d.r*d.r;
+    }
+
+    function drawSplash(x,y){
+      ctx.save(); ctx.fillStyle='rgba(220,240,255,0.8)';
+      for(let i=0;i<5;i++){
+        ctx.beginPath(); ctx.arc(x+rand(-20,20), y+rand(-20,0), rand(3,6),0,Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function update(dt){
+      // movement
+      if(keys.left) targetX -= player.speed*dt;
+      if(keys.right) targetX += player.speed*dt;
+      targetX = clamp(targetX, player.w/2, W-player.w/2);
+      player.x += (targetX - player.x) * 0.25; // smooth glide
+
+      // spawns
+      spawnTimer += dt*1000;
+      if(spawnTimer>600){
+        spawnTimer=0;
+        drops.push({x:rand(20,W-20), y:-30, vy:rand(200,260)+(level-1)*20, r:20, type:Math.random()<0.75?'good':'bad'});
+      }
+
+      // drops
+      for(let i=drops.length-1;i>=0;i--){
+        const d=drops[i]; d.y += d.vy*dt;
+        if(intersects(d,player)){
+          if(d.type==='good'){score++;drawSplash(d.x,player.y-20);if(score%10===0)level++;}
+          else {lives=Math.max(0,lives-2);}
+          drops.splice(i,1);updateHUD();continue;
+        }
+        if(d.y>H){ if(d.type==='good'){lives=Math.max(0,lives-1);updateHUD();} drops.splice(i,1); }
+      }
+
+      if(lives<=0){
+        running=false;
+        best=Math.max(best,score);
+        localStorage.setItem('gordon_best',best);
+        document.getElementById('finalStats').textContent=`You caught ${score} bottles. Best Serve: ${best}`;
+        document.getElementById('gameOverOverlay').style.display='grid';
+      }
+    }
+
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      drawBucket(player);
+      drops.forEach(d=>drawBottle(d.x,d.y,d.r,d.type));
+    }
+
+    // --- controls
+    const keys={left:false,right:false};
+    addEventListener('keydown',e=>{
+      if(e.key==='ArrowLeft')keys.left=true;
+      if(e.key==='ArrowRight')keys.right=true;
+    });
+    addEventListener('keyup',e=>{
+      if(e.key==='ArrowLeft')keys.left=false;
+      if(e.key==='ArrowRight')keys.right=false;
+    });
+
+    // --- smooth drag fix ---
+    let dragging = false;
+    canvas.addEventListener('pointerdown', e => {
+      if (running) {
+        dragging = true;
+        targetX = e.clientX;
+      }
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (running && dragging) {
+        targetX = e.clientX;
+      }
+    });
+    canvas.addEventListener('pointerup', () => dragging = false);
+    canvas.addEventListener('pointercancel', () => dragging = false);
+
+    document.getElementById('playBtn').onclick=()=>{reset();};
+    document.getElementById('retryBtn').onclick=()=>{reset();};
+
+    let prev=performance.now();
+    function loop(t){
+      const dt=(t-prev)/1000;prev=t;
+      if(running){update(dt);draw();}
+      requestAnimationFrame(loop);
+    }
+    loop(performance.now());
+  </script>
+</body>
+</html>
